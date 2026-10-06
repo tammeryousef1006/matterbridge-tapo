@@ -64,8 +64,11 @@ export class TapoAuthError extends Error {
   }
 }
 
+/** The device does not speak this protocol (wrong endpoint or answer). */
+export class ProtocolUnsupportedError extends Error {}
+
 /** A failure that a new handshake usually fixes (expired session, device restarted). */
-class SessionError extends Error {}
+export class SessionError extends Error {}
 
 const SESSION_TIMEOUT_ERROR = 9999;
 /** Codes that mean the session or login is gone and a new handshake is needed. */
@@ -74,9 +77,9 @@ const SESSION_ERRORS = new Set([SESSION_TIMEOUT_ERROR, 1002, 1112, -1001, -40401
 const LOGIN_ERRORS = new Set([-1501, 1111, 1100, 1003, -1005]);
 const ONE_DAY_S = 86400;
 const SESSION_EXPIRE_BUFFER_S = 20 * 60;
-const DEFAULT_TIMEOUT_MS = 10000;
+export const DEFAULT_TIMEOUT_MS = 10000;
 
-interface TapoEnvelope {
+export interface TapoEnvelope {
   error_code?: number;
   result?: unknown;
   msg?: string;
@@ -94,7 +97,7 @@ export function errorMessage(error: unknown): string {
 }
 
 /** Throw the right error for a non-zero `error_code`. */
-function checkErrorCode(envelope: TapoEnvelope, what: string): void {
+export function checkErrorCode(envelope: TapoEnvelope, what: string): void {
   const code = envelope.error_code ?? 0;
   if (code === 0) return;
   if (SESSION_ERRORS.has(code)) throw new SessionError(`${what}: session error ${code}`);
@@ -103,7 +106,7 @@ function checkErrorCode(envelope: TapoEnvelope, what: string): void {
 }
 
 /** Read one cookie value from Set-Cookie headers. */
-function cookie(response: AxiosResponse, name: string): string | undefined {
+export function cookie(response: AxiosResponse, name: string): string | undefined {
   const headers = response.headers['set-cookie'];
   for (const header of Array.isArray(headers) ? headers : headers ? [headers] : []) {
     for (const part of String(header).split(';')) {
@@ -114,12 +117,12 @@ function cookie(response: AxiosResponse, name: string): string | undefined {
   return undefined;
 }
 
-function sessionExpiry(response: AxiosResponse): number {
+export function sessionExpiry(response: AxiosResponse): number {
   const timeout = Number(cookie(response, 'TIMEOUT')) || ONE_DAY_S;
   return Date.now() + Math.max(60, timeout - SESSION_EXPIRE_BUFFER_S) * 1000;
 }
 
-interface Transport {
+export interface Transport {
   readonly protocol: TapoProtocol;
   send(request: string): Promise<TapoEnvelope>;
   reset(): void;
@@ -130,7 +133,7 @@ function candidateCredentials(credentials: TapoCredentials): TapoCredentials[] {
   return [credentials, DEFAULT_TAPO_CREDENTIALS, DEFAULT_KASA_CREDENTIALS, { username: '', password: '' }];
 }
 
-class KlapTransport implements Transport {
+export class KlapTransport implements Transport {
   readonly protocol = 'klap';
   private session: KlapSession | undefined;
   private sessionCookie: string | undefined;
@@ -285,7 +288,6 @@ class AesTransport implements Transport {
   }
 }
 
-class ProtocolUnsupportedError extends Error {}
 
 export interface ChildRequestResult {
   method: string;

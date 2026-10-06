@@ -14,6 +14,10 @@ export interface DeviceFunction {
   label?: string;
   /** For onOff: the device reports a brightness and can be dimmed. */
   dimmable?: boolean;
+  /** For onOff: the light takes a colour (hue/saturation). */
+  color?: boolean;
+  /** For onOff: the light's white range in Kelvin, when it can change its white temperature. */
+  colorTempRange?: [number, number];
 }
 
 export interface DeviceState {
@@ -21,6 +25,12 @@ export interface DeviceState {
   on?: boolean;
   /** 1-100 as reported by Tapo. */
   brightness?: number;
+  /** Degrees 0-360. */
+  hue?: number;
+  /** 0-100. */
+  saturation?: number;
+  /** Kelvin; 0 while the light shows a colour. */
+  colorTemp?: number;
   /** Degrees Celsius. */
   temperature?: number;
   /** Percent. */
@@ -89,8 +99,19 @@ export function deviceFunctions(info: TapoParams): DeviceFunction[] {
       return [{ kind: 'waterLeak', id: '' }];
   }
   if (isHub(info)) return [];
-  if (typeof info.device_on === 'boolean') return [{ kind: 'onOff', id: '', dimmable: typeof info.brightness === 'number' }];
+  if (typeof info.device_on === 'boolean') {
+    const fn: DeviceFunction = { kind: 'onOff', id: '', dimmable: typeof info.brightness === 'number' };
+    if (fn.dimmable && typeof info.hue === 'number' && typeof info.saturation === 'number') fn.color = true;
+    const range = info.color_temp_range;
+    if (fn.dimmable && Array.isArray(range) && range.length === 2 && Number(range[0]) < Number(range[1])) fn.colorTempRange = [Number(range[0]), Number(range[1])];
+    return [fn];
+  }
   return [];
+}
+
+/** The display name a driver decoded, else the base64 nickname. */
+export function unitName(info: TapoParams): string {
+  return typeof info._name === 'string' ? info._name.trim() : decodeNickname(info.nickname);
 }
 
 /** Whether a device is a light (bulb or light strip) rather than an outlet. */
@@ -115,6 +136,12 @@ export function deviceState(info: TapoParams): DeviceState {
   if (typeof info.device_on === 'boolean') state.on = info.device_on;
   const brightness = number(info.brightness);
   if (brightness !== undefined) state.brightness = Math.max(1, Math.min(100, Math.round(brightness)));
+  const hue = number(info.hue);
+  if (hue !== undefined) state.hue = ((Math.round(hue) % 360) + 360) % 360;
+  const saturation = number(info.saturation);
+  if (saturation !== undefined) state.saturation = Math.max(0, Math.min(100, Math.round(saturation)));
+  const colorTemp = number(info.color_temp);
+  if (colorTemp !== undefined) state.colorTemp = Math.max(0, Math.round(colorTemp));
 
   const temperature = number(info.current_temp);
   // current_temp_exception only flags readings outside the comfort range; the value is still real
@@ -140,4 +167,56 @@ export function brightnessToLevel(brightness: number): number {
 /** Matter level (0-254) to Tapo brightness (1-100). */
 export function levelToBrightness(level: number): number {
   return Math.max(1, Math.min(100, Math.round((level * 100) / 254)));
+}
+
+/** Tapo hue (0-360°) to Matter hue (0-254). */
+export function hueToMatter(hue: number): number {
+  return Math.max(0, Math.min(254, Math.round((hue * 254) / 360)));
+}
+
+export function matterToHue(hue: number): number {
+  return Math.max(0, Math.min(360, Math.round((hue * 360) / 254)));
+}
+
+/** Tapo saturation (0-100) to Matter saturation (0-254). */
+export function saturationToMatter(saturation: number): number {
+  return Math.max(0, Math.min(254, Math.round((saturation * 254) / 100)));
+}
+
+export function matterToSaturation(saturation: number): number {
+  return Math.max(0, Math.min(100, Math.round((saturation * 100) / 254)));
+}
+
+/** Kelvin to mireds and back (Matter colour temperatures are in mireds). */
+export function kelvinToMireds(kelvin: number): number {
+  return Math.round(1000000 / Math.max(1, kelvin));
+}
+
+export function miredsToKelvin(mireds: number): number {
+  return Math.round(1000000 / Math.max(1, mireds));
+}
+
+/** CIE xy (Matter 0-65535 scale) to hue (0-360°) and saturation (0-100), for controllers that send xy. */
+export function xyToHueSaturation(x: number, y: number): { hue: number; saturation: number } {
+  const cx = x / 65535;
+  const cy = Math.max(y / 65535, 0.0001);
+  const Y = 1;
+  const X = (Y / cy) * cx;
+  const Z = (Y / cy) * (1 - cx - cy);
+  // XYZ to linear sRGB, then gamma
+  let r = X * 3.2406 - Y * 1.5372 - Z * 0.4986;
+  let g = -X * 0.9689 + Y * 1.8758 + Z * 0.0415;
+  let b = X * 0.0557 - Y * 0.204 + Z * 1.057;
+  const max = Math.max(r, g, b, 1e-6);
+  [r, g, b] = [r, g, b].map((c) => Math.max(0, c / max)).map((c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055));
+  const hi = Math.max(r, g, b);
+  const lo = Math.min(r, g, b);
+  const delta = hi - lo;
+  let hue = 0;
+  if (delta > 0) {
+    if (hi === r) hue = 60 * (((g - b) / delta) % 6);
+    else if (hi === g) hue = 60 * ((b - r) / delta + 2);
+    else hue = 60 * ((r - g) / delta + 4);
+  }
+  return { hue: Math.round((hue + 360) % 360), saturation: Math.round(hi === 0 ? 0 : (delta / hi) * 100) };
 }

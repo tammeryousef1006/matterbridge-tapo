@@ -1,7 +1,18 @@
 import * as crypto from 'crypto';
 import * as dgram from 'dgram';
 
+import { xorDecrypt, xorEncrypt } from './kasaClient.js';
 import { TapoProtocol } from './tapoClient.js';
+
+/**
+ * How the plugin talks to a discovered device:
+ * - smart: Tapo plugs, bulbs, strips, H100 hub (KLAP or AES on port 80)
+ * - smartcam: H200/H500 hubs (HTTPS)
+ * - kasa: Kasa devices (XOR on port 9999, or KLAP)
+ * - camera: Tapo cameras and doorbells (not supported yet)
+ * - other: anything else (robot vacuums...)
+ */
+export type DeviceFamily = 'smart' | 'smartcam' | 'kasa' | 'camera' | 'other';
 
 /** A device that answered the TP-Link discovery broadcast (UDP port 20002). */
 export interface DiscoveredDevice {
@@ -12,8 +23,11 @@ export interface DiscoveredDevice {
   model: string;
   deviceId: string;
   mac: string;
-  /** undefined when the device uses a protocol this plugin does not speak (cameras, the H200 hub). */
+  family: DeviceFamily;
+  /** For the smart family. */
   protocol?: TapoProtocol;
+  /** For the kasa family. */
+  kasaTransport?: 'xor' | 'klap';
   /** Which way the device was found to speak, for the log. */
   encryptType?: string;
   https: boolean;
@@ -22,6 +36,7 @@ export interface DiscoveredDevice {
 }
 
 export const DISCOVERY_PORT = 20002;
+export const KASA_DISCOVERY_PORT = 9999;
 
 let discoveryKey: string | undefined;
 
@@ -72,17 +87,28 @@ export function parseDiscoveryResponse(data: Buffer, fromIp: string): Discovered
   const encryptInfo = result.encrypt_info as { sym_schm?: string } | undefined;
   const encryptType = scheme.encrypt_type ?? encryptInfo?.sym_schm;
   const https = scheme.is_support_https === true;
-  // HTTPS devices (H200 hub, cameras) use a different login that this plugin does not speak yet
+  const deviceType = result.device_type;
+  let family: DeviceFamily = 'other';
   let protocol: TapoProtocol | undefined;
-  if (!https && encryptType === 'KLAP') protocol = 'klap';
-  else if (!https && encryptType === 'AES') protocol = 'aes';
+  let kasaTransport: 'xor' | 'klap' | undefined;
+  if (/IPCAMERA|DOORBELL|CHIME/.test(deviceType)) family = 'camera';
+  else if (deviceType.startsWith('IOT.')) {
+    family = 'kasa';
+    kasaTransport = encryptType === 'KLAP' ? 'klap' : 'xor';
+  } else if (https && deviceType.endsWith('HUB')) family = 'smartcam';
+  else if (!https && (encryptType === 'KLAP' || encryptType === 'AES') && !deviceType.includes('ROBOVAC')) {
+    family = 'smart';
+    protocol = encryptType === 'KLAP' ? 'klap' : 'aes';
+  }
   return {
     ip: typeof result.ip === 'string' && result.ip ? result.ip : fromIp,
-    deviceType: result.device_type,
+    deviceType,
     model: String(result.device_model ?? ''),
     deviceId: String(result.device_id ?? ''),
     mac: String(result.mac ?? ''),
+    family,
     protocol,
+    kasaTransport,
     encryptType,
     https,
     httpPort: typeof scheme.http_port === 'number' ? scheme.http_port : undefined,
@@ -90,17 +116,43 @@ export function parseDiscoveryResponse(data: Buffer, fromIp: string): Discovered
   };
 }
 
+/** Parse a reply to the Kasa discovery (UDP 9999): XOR obfuscated get_sysinfo, without length header. */
+export function parseKasaDiscoveryResponse(data: Buffer, fromIp: string): DiscoveredDevice | undefined {
+  let sysinfo: Record<string, unknown> | undefined;
+  try {
+    sysinfo = JSON.parse(xorDecrypt(data))?.system?.get_sysinfo;
+  } catch {
+    return undefined;
+  }
+  if (!sysinfo || typeof sysinfo !== 'object') return undefined;
+  return {
+    ip: fromIp,
+    deviceType: String(sysinfo.mic_type ?? sysinfo.type ?? 'IOT'),
+    model: String(sysinfo.model ?? ''),
+    deviceId: String(sysinfo.deviceId ?? ''),
+    mac: String(sysinfo.mac ?? sysinfo.mic_mac ?? ''),
+    family: 'kasa',
+    kasaTransport: 'xor',
+    encryptType: 'XOR',
+    https: false,
+  };
+}
+
+export const KASA_DISCOVERY_QUERY = (): Buffer => xorEncrypt(JSON.stringify({ system: { get_sysinfo: {} } }), false);
+
 export interface DiscoverOptions {
   /** How long to listen for replies. */
   timeoutMs?: number;
   /** Broadcast address(es); 255.255.255.255 by default. */
   targets?: string[];
   port?: number;
+  /** Port of the Kasa discovery (9999). */
+  kasaPort?: number;
 }
 
 /** Broadcast the discovery probe a few times and collect the replies, one per IP. */
 export function discover(options: DiscoverOptions = {}): Promise<DiscoveredDevice[]> {
-  const { timeoutMs = 5000, targets = ['255.255.255.255'], port = DISCOVERY_PORT } = options;
+  const { timeoutMs = 5000, targets = ['255.255.255.255'], port = DISCOVERY_PORT, kasaPort = KASA_DISCOVERY_PORT } = options;
   return new Promise((resolve, reject) => {
     const found = new Map<string, DiscoveredDevice>();
     const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
@@ -124,14 +176,19 @@ export function discover(options: DiscoverOptions = {}): Promise<DiscoveredDevic
       reject(error);
     });
     socket.on('message', (message, remote) => {
-      const device = parseDiscoveryResponse(message, remote.address);
-      if (device) found.set(device.ip, device);
+      const device = remote.port === kasaPort ? parseKasaDiscoveryResponse(message, remote.address) : parseDiscoveryResponse(message, remote.address);
+      // A Kasa device answering both probes is kept with its newer (port 20002) description
+      if (device && !(device.encryptType === 'XOR' && found.has(device.ip))) found.set(device.ip, device);
     });
     socket.bind(0, () => {
       socket.setBroadcast(true);
       const query = discoveryQuery();
+      const kasaQuery = KASA_DISCOVERY_QUERY();
       const send = (): void => {
-        for (const target of targets) socket.send(query, port, target, () => undefined);
+        for (const target of targets) {
+          socket.send(query, port, target, () => undefined);
+          socket.send(kasaQuery, kasaPort, target, () => undefined);
+        }
       };
       // UDP gets lost; three probes spread over the first part of the window
       for (const delay of [0, Math.round(timeoutMs / 5), Math.round((2 * timeoutMs) / 5)]) timers.push(setTimeout(send, delay));

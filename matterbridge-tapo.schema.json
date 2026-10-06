@@ -1,6 +1,6 @@
 {
   "title": "Matterbridge Tapo Plugin",
-  "description": "matterbridge-tapo by Tamer Salah. Enter the email and password of your TP-Link (Tapo app) account; devices on your network are found automatically.",
+  "description": "matterbridge-tapo by Tamer Salah. Enter the email and password of your TP-Link account (Tapo/Kasa app); devices on your network are found automatically.",
   "type": "object",
   "required": ["email", "password"],
   "properties": {
@@ -18,7 +18,7 @@
     },
     "email": {
       "title": "TP-Link email",
-      "description": "The email you log in to the Tapo app with (case-sensitive)",
+      "description": "The email you log in to the Tapo or Kasa app with (case-sensitive)",
       "type": "string"
     },
     "password": {
@@ -35,7 +35,7 @@
     },
     "hosts": {
       "title": "Device IP addresses",
-      "description": "IP addresses of Tapo devices to add even if discovery does not find them (e.g. 192.168.68.50). Give them a fixed IP in your router.",
+      "description": "IP addresses of Tapo/Kasa devices to add even if discovery does not find them (e.g. 192.168.68.50). Give them a fixed IP in your router.",
       "type": "array",
       "items": {
         "type": "string"

@@ -6,7 +6,9 @@ import {
   PlatformMatterbridge,
   bridgedNode,
   contactSensor,
+  colorTemperatureLight,
   dimmableLight,
+  extendedColorLight,
   humiditySensor,
   occupancySensor,
   onOffLight,
@@ -19,6 +21,7 @@ import { AnsiLogger } from 'matterbridge/logger';
 import {
   BooleanState,
   BridgedDeviceBasicInformation,
+  ColorControl,
   LevelControl,
   OccupancySensing,
   OnOff,
@@ -27,8 +30,30 @@ import {
   TemperatureMeasurement,
 } from 'matterbridge/matter/clusters';
 
-import { DeviceFunction, DeviceState, baseModel, brightnessToLevel, decodeNickname, deviceFunctions, deviceState, hasBattery, hasChildren, isBulb, levelToBrightness } from './deviceMapper.js';
+import {
+  DeviceFunction,
+  DeviceState,
+  baseModel,
+  brightnessToLevel,
+  deviceFunctions,
+  deviceState,
+  hasBattery,
+  hasChildren,
+  hueToMatter,
+  isBulb,
+  kelvinToMireds,
+  levelToBrightness,
+  matterToHue,
+  matterToSaturation,
+  miredsToKelvin,
+  saturationToMatter,
+  unitName,
+  xyToHueSaturation,
+} from './deviceMapper.js';
 import { DiscoveredDevice, discover } from './discovery.js';
+import { DeviceDriver, KasaDriver, LightParams, SmartCamHubDriver, SmartDriver } from './drivers.js';
+import { KasaClient } from './kasaClient.js';
+import { SmartCamClient } from './smartCamClient.js';
 import { TapoAuthError, TapoClient, TapoParams, errorMessage } from './tapoClient.js';
 
 export interface TapoPlatformConfig extends PlatformConfig {
@@ -59,7 +84,7 @@ interface TapoUnit {
 /** One device on the network that the plugin talks to (a plug, bulb, strip or hub). */
 interface TapoHost {
   ip: string;
-  client: TapoClient;
+  driver: DeviceDriver;
   deviceId: string;
   name: string;
   model: string;
@@ -119,8 +144,12 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
         const found = await discover({ timeoutMs: DISCOVERY_TIMEOUT_MS });
         this.log.info(`Discovery found ${found.length} TP-Link device(s).`);
         for (const device of found) {
-          if (!device.protocol) {
-            this.log.info(`Skipping ${device.model} at ${device.ip}: it uses the ${device.https ? 'HTTPS' : device.encryptType ?? 'unknown'} protocol, not supported yet.`);
+          if (device.family === 'camera') {
+            this.log.info(`Skipping ${device.model} at ${device.ip}: cameras are not supported yet.`);
+            continue;
+          }
+          if (device.family === 'other') {
+            this.log.info(`Skipping ${device.model} at ${device.ip} (${device.deviceType}): not supported.`);
             continue;
           }
           this.pending.set(device.ip, device);
@@ -155,42 +184,72 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
     }
   }
 
-  private async connectHost(ip: string, discovered: DiscoveredDevice | undefined): Promise<void> {
+  /** The drivers to try for an address: the one discovery points to, or every family for a manual address. */
+  private driversFor(ip: string, discovered: DiscoveredDevice | undefined): DeviceDriver[] {
     // "192.168.1.20" or "192.168.1.20:8080"
-    const [address, port] = ip.split(':');
-    const client = new TapoClient({
-      host: address,
-      port: discovered?.httpPort ?? (port ? Number(port) : undefined),
-      credentials: this.credentials!,
-      protocol: discovered?.protocol,
-      loginVersion: discovered?.loginVersion,
-      log: this.log,
-    });
-    const info = await client.getDeviceInfo();
+    const [address, portText] = ip.split(':');
+    const port = portText ? Number(portText) : undefined;
+    const credentials = this.credentials!;
+    const smart = (): DeviceDriver =>
+      new SmartDriver(
+        new TapoClient({ host: address, port: discovered?.httpPort ?? port, credentials, protocol: discovered?.protocol, loginVersion: discovered?.loginVersion, log: this.log }),
+      );
+    const smartCam = (): DeviceDriver => new SmartCamHubDriver(new SmartCamClient({ host: address, port: discovered?.httpPort ?? (port && port !== 80 ? port : undefined), credentials, log: this.log }));
+    const kasa = (): DeviceDriver =>
+      new KasaDriver(new KasaClient({ host: address, transport: discovered?.kasaTransport, port: discovered?.kasaTransport === 'klap' ? discovered.httpPort : port, credentials, log: this.log }));
+    switch (discovered?.family) {
+      case 'smart':
+        return [smart()];
+      case 'smartcam':
+        return [smartCam()];
+      case 'kasa':
+        return [kasa()];
+      default:
+        return [smart(), smartCam(), kasa()];
+    }
+  }
+
+  /** Read a device with the first driver that works. */
+  private async readDevice(ip: string, discovered: DiscoveredDevice | undefined): Promise<{ driver: DeviceDriver; info: TapoParams; children: TapoParams[] }> {
+    const errors: unknown[] = [];
+    for (const driver of this.driversFor(ip, discovered)) {
+      try {
+        return { driver, ...(await driver.read()) };
+      } catch (error) {
+        // Wrong credentials are reported at once; anything else may just be the wrong family
+        if (error instanceof TapoAuthError) throw error;
+        this.log.debug(`${ip}: ${driver.constructor.name} failed: ${errorMessage(error)}`);
+        errors.push(error);
+      }
+    }
+    throw errors[0];
+  }
+
+  private async connectHost(ip: string, discovered: DiscoveredDevice | undefined): Promise<void> {
+    // Read everything before registering anything, so a failure here can simply be retried later
+    const { driver, info, children } = await this.readDevice(ip, discovered);
     const deviceId = String(info.device_id ?? discovered?.deviceId ?? ip);
     const model = baseModel(info.model ?? discovered?.model);
-    const name = decodeNickname(info.nickname) || `${model} ${ip}`;
+    const name = unitName(info) || `${model} ${ip}`;
     if ([...this.hosts.values()].some((host) => host.deviceId === deviceId)) {
       this.log.debug(`${name} at ${ip} is already connected under another address.`);
       return;
     }
-    // Read everything before registering anything, so a failure here can simply be retried later
-    const children = hasChildren(info) ? await client.getChildDeviceList() : [];
-    this.log.info(`Connected to ${model} "${name}" at ${ip} (${client.protocol?.toUpperCase()}).`);
+    this.log.info(`Connected to ${model} "${name}" at ${ip} (${driver.protocol}).`);
     this.log.debug(`Device info of ${name}: ${JSON.stringify(redactInfo(info))}`);
 
-    const host: TapoHost = { ip, client, deviceId, name, model, online: true, units: new Map() };
+    const host: TapoHost = { ip, driver, deviceId, name, model, online: true, units: new Map() };
     this.hosts.set(ip, host);
 
     await this.addUnit(host, { id: deviceId, name, model, info });
-    if (hasChildren(info)) {
+    if (hasChildren(info) || children.length > 0) {
       this.log.info(`${name} has ${children.length} connected device(s).`);
       children.sort((a, b) => Number(a.position ?? 0) - Number(b.position ?? 0));
       for (const child of children) {
         const childModel = baseModel(child.model);
         const position = Number(child.position);
         const childName =
-          decodeNickname(child.nickname) || (Number.isFinite(position) && position > 0 ? `${name} Outlet ${position}` : `${name} ${childModel || 'Device'}`);
+          unitName(child) || (Number.isFinite(position) && position > 0 ? `${name} Outlet ${position}` : `${name} ${childModel || 'Device'}`);
         await this.addUnit(host, { id: String(child.device_id), parentId: deviceId, name: childName, model: childModel, info: child });
       }
     }
@@ -227,12 +286,17 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
 
   private functionLabel(unit: TapoUnit, fn: DeviceFunction): string {
     if (fn.kind !== 'onOff') return fn.kind;
-    return this.deviceType(unit, fn) === onOffPlugInUnit ? 'outlet' : fn.dimmable ? 'dimmable light' : 'light';
+    const type = this.deviceType(unit, fn);
+    if (type === extendedColorLight) return 'color light';
+    if (type === colorTemperatureLight) return 'white-tunable light';
+    return type === onOffPlugInUnit ? 'outlet' : fn.dimmable ? 'dimmable light' : 'light';
   }
 
   private deviceType(unit: TapoUnit, fn: DeviceFunction): DeviceTypeDefinition {
     switch (fn.kind) {
       case 'onOff': {
+        if (fn.color) return extendedColorLight;
+        if (fn.colorTempRange) return colorTemperatureLight;
         if (fn.dimmable) return dimmableLight;
         const lights = this.tapoConfig.lightList ?? [];
         return isBulb(unit.info) || lights.includes(unit.name) || lights.includes(unit.id) ? onOffLight : onOffPlugInUnit;
@@ -277,6 +341,16 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
       case 'onOff':
         endpoint.createDefaultOnOffClusterServer(state.on ?? false);
         if (fn.dimmable) endpoint.createDefaultLevelControlClusterServer(brightnessToLevel(state.brightness ?? 100));
+        if (fn.color || fn.colorTempRange) {
+          // Matter takes white temperatures in mireds: the warmest white is the largest value
+          const [minK, maxK] = fn.colorTempRange ?? [2500, 6500];
+          const mireds = Math.min(kelvinToMireds(minK), Math.max(kelvinToMireds(maxK), kelvinToMireds(state.colorTemp || minK)));
+          if (fn.color) {
+            endpoint.createDefaultColorControlClusterServer(undefined, undefined, hueToMatter(state.hue ?? 0), saturationToMatter(state.saturation ?? 0), mireds, kelvinToMireds(maxK), kelvinToMireds(minK));
+          } else {
+            endpoint.createCtColorControlClusterServer(mireds, kelvinToMireds(maxK), kelvinToMireds(minK));
+          }
+        }
         break;
       case 'temperature':
         endpoint.createDefaultTemperatureMeasurementClusterServer(state.temperature === undefined ? null : Math.round(state.temperature * 100));
@@ -298,16 +372,18 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
     return endpoint;
   }
 
-  /** Send set_device_info to a device, or through its hub/strip for a child. */
-  private async setDeviceInfo(host: TapoHost, unit: TapoUnit, params: TapoParams): Promise<void> {
-    if (unit.parentId) await host.client.controlChild(unit.id, 'set_device_info', params);
-    else await host.client.setDeviceInfo(params);
-    unit.info = { ...unit.info, ...params };
+  /** Change a device, or a child through its hub/strip. */
+  private async setDeviceInfo(host: TapoHost, unit: TapoUnit, params: LightParams): Promise<void> {
+    await host.driver.set(unit.parentId ? unit.id : undefined, params);
+    const changes: TapoParams = { ...params };
+    if (params.hue !== undefined || params.saturation !== undefined) changes.color_temp = 0;
+    for (const key of Object.keys(changes)) if (changes[key] === undefined) delete changes[key];
+    unit.info = { ...unit.info, ...changes };
   }
 
   private addOnOffHandlers(host: TapoHost, unit: TapoUnit, endpoint: MatterbridgeEndpoint, fn: DeviceFunction): void {
     // Throwing from a handler fails the Matter command, so controllers show the error
-    const run = async (what: string, params: TapoParams): Promise<void> => {
+    const run = async (what: string, params: LightParams): Promise<void> => {
       this.log.info(`${unit.name}: ${what}...`);
       try {
         await this.setDeviceInfo(host, unit, params);
@@ -331,6 +407,38 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
     };
     endpoint.addCommandHandler('moveToLevel', ({ request }) => setLevel((request as { level: number }).level, false));
     endpoint.addCommandHandler('moveToLevelWithOnOff', ({ request }) => setLevel((request as { level: number }).level, true));
+
+    if (fn.color) {
+      const current = (attribute: string): number => Number(endpoint.getAttribute(ColorControl.Cluster.id, attribute) ?? 0);
+      const setColor = (hue: number, saturation: number): Promise<void> => run(`setting colour to hue ${hue}°, saturation ${saturation}%`, { hue, saturation });
+      endpoint.addCommandHandler('moveToHue', ({ request }) => setColor(matterToHue((request as { hue: number }).hue), matterToSaturation(current('currentSaturation'))));
+      endpoint.addCommandHandler('moveToSaturation', ({ request }) =>
+        setColor(matterToHue(current('currentHue')), matterToSaturation((request as { saturation: number }).saturation)),
+      );
+      endpoint.addCommandHandler('moveToHueAndSaturation', ({ request }) => {
+        const { hue, saturation } = request as { hue: number; saturation: number };
+        return setColor(matterToHue(hue), matterToSaturation(saturation));
+      });
+      endpoint.addCommandHandler('enhancedMoveToHue', ({ request }) =>
+        setColor(Math.round(((request as { enhancedHue: number }).enhancedHue * 360) / 65536), matterToSaturation(current('currentSaturation'))),
+      );
+      endpoint.addCommandHandler('enhancedMoveToHueAndSaturation', ({ request }) => {
+        const { enhancedHue, saturation } = request as { enhancedHue: number; saturation: number };
+        return setColor(Math.round((enhancedHue * 360) / 65536), matterToSaturation(saturation));
+      });
+      endpoint.addCommandHandler('moveToColor', ({ request }) => {
+        const { colorX, colorY } = request as { colorX: number; colorY: number };
+        const { hue, saturation } = xyToHueSaturation(colorX, colorY);
+        return setColor(hue, saturation);
+      });
+    }
+    if (fn.color || fn.colorTempRange) {
+      const [minK, maxK] = fn.colorTempRange ?? [2500, 6500];
+      endpoint.addCommandHandler('moveToColorTemperature', ({ request }) => {
+        const kelvin = Math.max(minK, Math.min(maxK, miredsToKelvin((request as { colorTemperatureMireds: number }).colorTemperatureMireds)));
+        return run(`setting white to ${kelvin} K`, { color_temp: kelvin });
+      });
+    }
   }
 
   override async onConfigure(): Promise<void> {
@@ -376,8 +484,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
 
   private async refreshHost(host: TapoHost): Promise<void> {
     try {
-      const info = await host.client.getDeviceInfo();
-      const children = hasChildren(info) && [...host.units.values()].some((unit) => unit.parentId) ? await host.client.getChildDeviceList() : [];
+      const { info, children } = await host.driver.read();
       if (!host.online) this.log.info(`${host.name} (${host.ip}) is back online.`);
       host.online = true;
       const own = host.units.get(host.deviceId);
@@ -389,7 +496,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
     } catch (error) {
       if (host.online) this.log.warn(`${host.name} (${host.ip}) is not responding: ${errorMessage(error)}`);
       host.online = false;
-      host.client.reset();
+      host.driver.reset();
     }
     if (!this.configured) return;
     for (const unit of host.units.values()) await this.applyState(unit, host.online);
@@ -406,6 +513,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
           case 'onOff':
             if (state.on !== undefined) await update(endpoint, OnOff.Cluster.id, 'onOff', state.on);
             if (fn.dimmable && state.brightness !== undefined) await update(endpoint, LevelControl.Cluster.id, 'currentLevel', brightnessToLevel(state.brightness));
+            await this.applyColor(endpoint, fn, state);
             break;
           case 'temperature':
             if (state.temperature !== undefined) await update(endpoint, TemperatureMeasurement.Cluster.id, 'measuredValue', Math.round(state.temperature * 100));
@@ -434,6 +542,25 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
       }
     } catch (error) {
       this.log.debug(`Could not update ${unit.name}: ${errorMessage(error)}`);
+    }
+  }
+
+  /** Show the light's colour or white temperature, and which of the two it is in. */
+  private async applyColor(endpoint: MatterbridgeEndpoint, fn: DeviceFunction, state: DeviceState): Promise<void> {
+    if (!fn.color && !fn.colorTempRange) return;
+    const whiteMode = !fn.color || (state.colorTemp ?? 0) > 0;
+    if (whiteMode && fn.colorTempRange && state.colorTemp) {
+      const [minK, maxK] = fn.colorTempRange;
+      await update(endpoint, ColorControl.Cluster.id, 'colorTemperatureMireds', kelvinToMireds(Math.max(minK, Math.min(maxK, state.colorTemp))));
+    }
+    if (fn.color && !whiteMode) {
+      if (state.hue !== undefined) await update(endpoint, ColorControl.Cluster.id, 'currentHue', hueToMatter(state.hue));
+      if (state.saturation !== undefined) await update(endpoint, ColorControl.Cluster.id, 'currentSaturation', saturationToMatter(state.saturation));
+    }
+    if (fn.color) {
+      const mode = whiteMode && fn.colorTempRange ? ColorControl.ColorMode.ColorTemperatureMireds : ColorControl.ColorMode.CurrentHueAndCurrentSaturation;
+      await update(endpoint, ColorControl.Cluster.id, 'colorMode', mode);
+      await update(endpoint, ColorControl.Cluster.id, 'enhancedColorMode', mode);
     }
   }
 }
