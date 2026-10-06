@@ -1,0 +1,90 @@
+{
+  "title": "Matterbridge Tapo Plugin",
+  "description": "matterbridge-tapo by Tamer Salah. Enter the email and password of your TP-Link (Tapo app) account; devices on your network are found automatically.",
+  "type": "object",
+  "required": ["email", "password"],
+  "properties": {
+    "name": {
+      "description": "Plugin name",
+      "type": "string",
+      "readOnly": true,
+      "ui:widget": "hidden"
+    },
+    "type": {
+      "description": "Plugin type",
+      "type": "string",
+      "readOnly": true,
+      "ui:widget": "hidden"
+    },
+    "email": {
+      "title": "TP-Link email",
+      "description": "The email you log in to the Tapo app with (case-sensitive)",
+      "type": "string"
+    },
+    "password": {
+      "title": "TP-Link password",
+      "description": "The password of that account (case-sensitive). It is only used on your network to log in to your devices.",
+      "type": "string",
+      "ui:widget": "password"
+    },
+    "discovery": {
+      "title": "Find devices automatically",
+      "description": "Look for Tapo devices on the local network at startup",
+      "type": "boolean",
+      "default": true
+    },
+    "hosts": {
+      "title": "Device IP addresses",
+      "description": "IP addresses of Tapo devices to add even if discovery does not find them (e.g. 192.168.68.50). Give them a fixed IP in your router.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "refreshInterval": {
+      "title": "Refresh interval",
+      "description": "How often (in seconds) to read the state of your devices. Minimum 10, 0 disables polling.",
+      "type": "number",
+      "default": 30
+    },
+    "lightList": {
+      "description": "Expose these plugs/switches (names or device IDs) as lights instead of outlets",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "selectFrom": "name"
+    },
+    "whiteList": {
+      "description": "Only expose devices with these names or device IDs (empty exposes all)",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "selectFrom": "name"
+    },
+    "blackList": {
+      "description": "Never expose devices with these names or device IDs",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "selectFrom": "name"
+    },
+    "debug": {
+      "description": "Enable debug logging for the plugin",
+      "type": "boolean",
+      "default": false
+    },
+    "unregisterOnShutdown": {
+      "description": "Unregister all devices on shutdown (development only)",
+      "type": "boolean",
+      "default": false,
+      "ui:widget": "hidden"
+    }
+  }
+}
