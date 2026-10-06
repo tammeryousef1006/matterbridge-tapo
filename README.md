@@ -4,7 +4,7 @@
 
 A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your TP-Link **Tapo** and **Kasa** plugs, power strips, bulbs, light strips and the sensors behind Tapo hubs to Matter, so you can use them in SmartThings, Apple Home, Google Home, Alexa, Home Assistant and any other Matter controller.
 
-> **Beta:** this plugin is new. Please report what works and what doesn't in an issue, with the Matterbridge log.
+> This plugin is new. Please report what works and what doesn't in an [issue](https://github.com/tammeryousef1006/matterbridge-tapo/issues), with the Matterbridge log.
 
 ## Features
 

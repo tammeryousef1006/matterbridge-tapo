@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0 (2026-10-06)
+- First release, tested with an H500 hub (T110, T100), a Kasa KP303 strip, L930/L920 light strips, L535 bulbs and P110/P110M plugs on SmartThings
+- Local control of Tapo and Kasa devices with the TP-Link account, over KLAP, securePassthrough, HTTPS (H200/H500) or the Kasa XOR protocol; works on Node.js and Bun
+- Everything from the 0.1.0 betas below
+
 ## 0.1.0-beta.3 (2026-10-06)
 - Hub sensors respond within seconds: hubs are read every 2 seconds (`hubRefreshInterval`) instead of with the 30 second refresh
 - Motion sensors (T100) also read their event log, so a short movement between two reads is still reported; motion is held for `motionHoldTime` (default 30 seconds)
