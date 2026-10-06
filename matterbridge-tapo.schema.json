@@ -48,6 +48,18 @@
       "type": "number",
       "default": 30
     },
+    "hubRefreshInterval": {
+      "title": "Hub sensor refresh interval",
+      "description": "How often (in seconds) to read sensors behind a Tapo hub (door, motion, temperature). Minimum 1, 0 disables the quick reads.",
+      "type": "number",
+      "default": 2
+    },
+    "motionHoldTime": {
+      "title": "Motion hold time",
+      "description": "How long (in seconds) a motion sensor stays 'motion detected' after the last movement",
+      "type": "number",
+      "default": 30
+    },
     "lightList": {
       "description": "Expose these plugs/switches (names or device IDs) as lights instead of outlets",
       "type": "array",

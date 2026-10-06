@@ -71,6 +71,8 @@ If some devices are not found (discovery uses a network broadcast, which some ne
 | `discovery` | Find devices automatically (default `true`) |
 | `hosts` | IP addresses of devices to add by hand, e.g. `192.168.68.50` |
 | `refreshInterval` | Seconds between state refreshes (default `30`, minimum `10`, `0` disables) |
+| `hubRefreshInterval` | Seconds between reads of the sensors behind a hub (default `2`, minimum `1`, `0` disables) |
+| `motionHoldTime` | Seconds a motion sensor stays "motion detected" after the last movement (default `30`) |
 | `lightList` | Plugs/switches (names or device IDs) to expose as lights instead of outlets |
 | `whiteList` | Only expose devices with these names or device IDs |
 | `blackList` | Never expose devices with these names or device IDs |
@@ -81,7 +83,7 @@ If some devices are not found (discovery uses a network broadcast, which some ne
 - **"the device did not accept the TP-Link email/password"**: check both (they are case-sensitive). If you recently changed your password, open the Tapo app once so the devices learn the new one.
 - **No devices found**: check that Matterbridge is on the same network as the devices (with Docker, use host networking), or add their IP addresses under `hosts`.
 - **A device shows "not responding"**: it didn't answer the last refresh. Check its Wi-Fi. It comes back by itself.
-- **Sensor values update slowly**: hub sensors report every few minutes to the hub; the plugin reads the hub every `refreshInterval` seconds.
+- **Sensor values update slowly**: door and motion sensors are read through the hub every `hubRefreshInterval` seconds (2 by default). Temperature and humidity sensors only report to the hub every few minutes themselves.
 - **A device is skipped as unsupported**: enable `debug`, restart, and include the logged device info in an issue.
 
 ## How it works

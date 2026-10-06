@@ -62,6 +62,8 @@ export interface TapoPlatformConfig extends PlatformConfig {
   discovery?: boolean;
   hosts?: string[];
   refreshInterval?: number;
+  hubRefreshInterval?: number;
+  motionHoldTime?: number;
   lightList?: string[];
   whiteList?: string[];
   blackList?: string[];
@@ -79,6 +81,10 @@ interface TapoUnit {
   functions: DeviceFunction[];
   /** One bridged Matter device per function, keyed by function id. */
   endpoints: Map<string, MatterbridgeEndpoint>;
+  /** Motion sensors: id of the newest trigger log entry seen. */
+  lastLogId?: number;
+  /** Motion sensors: report motion until this time (epoch ms), so short detections are not lost. */
+  motionUntil?: number;
 }
 
 /** One device on the network that the plugin talks to (a plug, bulb, strip or hub). */
@@ -91,10 +97,16 @@ interface TapoHost {
   online: boolean;
   /** Units reached through this host: the device itself and its children. */
   units: Map<string, TapoUnit>;
+  /** A read is in progress (the fast hub loop and the refresh must not overlap). */
+  busy: boolean;
 }
 
 const DEFAULT_REFRESH_INTERVAL_S = 30;
 const MIN_REFRESH_INTERVAL_S = 10;
+/** Hub sensors are read much more often: door and motion changes should show within seconds. */
+const DEFAULT_HUB_REFRESH_INTERVAL_S = 2;
+const MIN_HUB_REFRESH_INTERVAL_S = 1;
+const DEFAULT_MOTION_HOLD_S = 30;
 const LOW_BATTERY_PERCENT = 20;
 const CRITICAL_BATTERY_PERCENT = 10;
 const DISCOVERY_TIMEOUT_MS = 5000;
@@ -106,6 +118,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
   /** Addresses found or configured that could not be connected yet; retried on every refresh. */
   private readonly pending = new Map<string, DiscoveredDevice | undefined>();
   private refreshTimer: NodeJS.Timeout | undefined;
+  private hubTimer: NodeJS.Timeout | undefined;
   private refreshing = false;
   private configured = false;
 
@@ -238,7 +251,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
     this.log.info(`Connected to ${model} "${name}" at ${ip} (${driver.protocol}).`);
     this.log.debug(`Device info of ${name}: ${JSON.stringify(redactInfo(info))}`);
 
-    const host: TapoHost = { ip, driver, deviceId, name, model, online: true, units: new Map() };
+    const host: TapoHost = { ip, driver, deviceId, name, model, online: true, units: new Map(), busy: false };
     this.hosts.set(ip, host);
 
     await this.addUnit(host, { id: deviceId, name, model, info });
@@ -454,12 +467,20 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
       this.refreshTimer = setInterval(() => void this.refresh(), interval * 1000);
       this.refreshTimer.unref?.();
     }
+    const hubInterval = this.hubRefreshIntervalSeconds();
+    if (hubInterval > 0) {
+      this.log.info(`Reading hub sensors every ${hubInterval} seconds.`);
+      this.hubTimer = setInterval(() => void this.refreshHubs(), hubInterval * 1000);
+      this.hubTimer.unref?.();
+    }
   }
 
   override async onShutdown(reason?: string): Promise<void> {
     this.log.info(`onShutdown called with reason: ${reason ?? 'none'}`);
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    if (this.hubTimer) clearInterval(this.hubTimer);
     this.refreshTimer = undefined;
+    this.hubTimer = undefined;
     await super.onShutdown(reason);
     if (this.config.unregisterOnShutdown === true) await this.unregisterAllDevices();
   }
@@ -468,6 +489,58 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
     const value = Number(this.tapoConfig.refreshInterval ?? DEFAULT_REFRESH_INTERVAL_S);
     if (!Number.isFinite(value) || value <= 0) return 0;
     return Math.max(MIN_REFRESH_INTERVAL_S, Math.round(value));
+  }
+
+  private hubRefreshIntervalSeconds(): number {
+    const value = Number(this.tapoConfig.hubRefreshInterval ?? DEFAULT_HUB_REFRESH_INTERVAL_S);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return Math.max(MIN_HUB_REFRESH_INTERVAL_S, value);
+  }
+
+  private motionHoldMs(): number {
+    const value = Number(this.tapoConfig.motionHoldTime ?? DEFAULT_MOTION_HOLD_S);
+    return (Number.isFinite(value) && value >= 0 ? value : DEFAULT_MOTION_HOLD_S) * 1000;
+  }
+
+  /** Quick read of every hub's children (sensors), with the event logs of motion sensors. */
+  private async refreshHubs(): Promise<void> {
+    await Promise.all(
+      [...this.hosts.values()]
+        .filter((host) => host.online && !host.busy && host.driver.readHubChildren && [...host.units.values()].some((unit) => unit.parentId))
+        .map(async (host) => {
+          host.busy = true;
+          try {
+            const motionIds = [...host.units.values()].filter((unit) => unit.parentId && unit.functions.some((fn) => fn.kind === 'motion')).map((unit) => unit.id);
+            const { children, logs } = await host.driver.readHubChildren!(motionIds);
+            for (const child of children) {
+              const unit = host.units.get(String(child.device_id));
+              if (unit) unit.info = child;
+            }
+            for (const [id, entries] of logs) {
+              const unit = host.units.get(id);
+              if (unit) this.processMotionLogs(unit, entries);
+            }
+            for (const unit of host.units.values()) if (unit.parentId) await this.applyState(unit, true);
+          } catch (error) {
+            // The regular refresh reports devices that stop answering; this loop just tries again
+            this.log.debug(`Quick read of ${host.name} failed: ${errorMessage(error)}`);
+          } finally {
+            host.busy = false;
+          }
+        }),
+    );
+  }
+
+  /** New "motion" entries in a sensor's event log mean motion, even if it was over before we looked. */
+  private processMotionLogs(unit: TapoUnit, entries: TapoParams[]): void {
+    const ids = entries.map((entry) => Number(entry.id)).filter(Number.isFinite);
+    if (ids.length === 0) return;
+    const newest = Math.max(...ids);
+    const previous = unit.lastLogId;
+    unit.lastLogId = newest;
+    // The first read only learns where the log is
+    if (previous === undefined || newest <= previous) return;
+    if (entries.some((entry) => Number(entry.id) > previous && entry.event === 'motion')) unit.motionUntil = Date.now() + this.motionHoldMs();
   }
 
   /** Poll every device (changes made in the Tapo app, by hand or by automations) and retry ones not connected yet. */
@@ -483,6 +556,8 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
   }
 
   private async refreshHost(host: TapoHost): Promise<void> {
+    if (host.busy) return;
+    host.busy = true;
     try {
       const { info, children } = await host.driver.read();
       if (!host.online) this.log.info(`${host.name} (${host.ip}) is back online.`);
@@ -497,6 +572,8 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
       if (host.online) this.log.warn(`${host.name} (${host.ip}) is not responding: ${errorMessage(error)}`);
       host.online = false;
       host.driver.reset();
+    } finally {
+      host.busy = false;
     }
     if (!this.configured) return;
     for (const unit of host.units.values()) await this.applyState(unit, host.online);
@@ -522,14 +599,22 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
             if (state.humidity !== undefined) await update(endpoint, RelativeHumidityMeasurement.Cluster.id, 'measuredValue', Math.round(state.humidity * 100));
             break;
           case 'contact':
-            if (state.open !== undefined) await update(endpoint, BooleanState.Cluster.id, 'stateValue', !state.open);
-            break;
-          case 'motion':
-            if (state.motion !== undefined) {
-              const current = endpoint.getAttribute(OccupancySensing.Cluster.id, 'occupancy') as { occupied?: boolean } | undefined;
-              if (current?.occupied !== state.motion) await endpoint.setAttribute(OccupancySensing.Cluster.id, 'occupancy', { occupied: state.motion }, endpoint.log);
+            if (state.open !== undefined && endpoint.getAttribute(BooleanState.Cluster.id, 'stateValue') !== !state.open) {
+              this.log.info(`${unit.name}: ${state.open ? 'opened' : 'closed'}`);
+              await update(endpoint, BooleanState.Cluster.id, 'stateValue', !state.open);
             }
             break;
+          case 'motion': {
+            // A detection holds the sensor occupied for motionHoldTime, so short ones are not lost between reads
+            if (state.motion) unit.motionUntil = Math.max(unit.motionUntil ?? 0, Date.now() + this.motionHoldMs());
+            const occupied = state.motion === true || Date.now() < (unit.motionUntil ?? 0);
+            const current = endpoint.getAttribute(OccupancySensing.Cluster.id, 'occupancy') as { occupied?: boolean } | undefined;
+            if (current?.occupied !== occupied) {
+              this.log.info(`${unit.name}: ${occupied ? 'motion detected' : 'no motion'}`);
+              await endpoint.setAttribute(OccupancySensing.Cluster.id, 'occupancy', { occupied }, endpoint.log);
+            }
+            break;
+          }
           case 'waterLeak':
             if (state.leak !== undefined) await update(endpoint, BooleanState.Cluster.id, 'stateValue', state.leak);
             break;

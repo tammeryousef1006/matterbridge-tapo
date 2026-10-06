@@ -15,6 +15,11 @@ export interface DeviceDriver {
   read(): Promise<{ info: TapoParams; children: TapoParams[] }>;
   /** Change the device (childId undefined) or one of its children. Params use SMART names. */
   set(childId: string | undefined, params: LightParams): Promise<void>;
+  /**
+   * Hubs only: a quick read of the children, plus the latest trigger log entries ({id, event,
+   * timestamp}, newest first) of the given children, which catch motion between two reads.
+   */
+  readHubChildren?(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]> }>;
   /** Drop the session so the next request logs in again. */
   reset(): void;
 }
@@ -45,6 +50,20 @@ export class SmartDriver implements DeviceDriver {
     if (!info || typeof info !== 'object' || (!info.device_id && !info.model)) throw new Error('not a Tapo device (no device info)');
     const children = hasChildren(info) ? await this.client.getChildDeviceList() : [];
     return { info: named(info, decodeNickname(info.nickname)), children: children.map((child) => named(child, decodeNickname(child.nickname))) };
+  }
+
+  async readHubChildren(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]> }> {
+    const children = (await this.client.getChildDeviceList()).map((child) => named(child, decodeNickname(child.nickname)));
+    const logs = new Map<string, TapoParams[]>();
+    for (const id of logChildIds) {
+      try {
+        const result = await this.client.controlChild<{ logs?: TapoParams[] }>(id, 'get_trigger_logs', { start_id: 0 });
+        if (Array.isArray(result?.logs)) logs.set(id, result.logs);
+      } catch {
+        // Not every child keeps logs; the plain state still works
+      }
+    }
+    return { children, logs };
   }
 
   async set(childId: string | undefined, params: LightParams): Promise<void> {
@@ -82,6 +101,11 @@ export class SmartCamHubDriver implements DeviceDriver {
       // Sensors carry a base64 nickname like on the H100; cameras a plain alias
       children: children.map((child) => named(child, decodeNickname(child.nickname) || String(child.alias ?? ''))),
     };
+  }
+
+  async readHubChildren(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]> }> {
+    const { children, logs } = await this.client.getChildrenAndLogs(logChildIds);
+    return { children: children.map((child) => named(child, decodeNickname(child.nickname) || String(child.alias ?? ''))), logs };
   }
 
   async set(childId: string | undefined, params: LightParams): Promise<void> {

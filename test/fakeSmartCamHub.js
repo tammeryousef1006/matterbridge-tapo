@@ -73,6 +73,10 @@ export function createFakeSmartCamHub({ password, children, basicInfo }) {
       case 'controlChild': {
         const { device_id, request_data } = params.childControl;
         const child = children.find((c) => c.device_id === device_id);
+        if (request_data.method === 'get_trigger_logs') {
+          const logs = child.logs ?? [];
+          return { response_data: { error_code: 0, result: { logs: logs.slice(0, 5), start_id: logs[0]?.id ?? 0, sum: logs.length } } };
+        }
         Object.assign(child, request_data.params);
         return { response_data: { error_code: 0, result: {} } };
       }

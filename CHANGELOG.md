@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.3 (2026-10-06)
+- Hub sensors respond within seconds: hubs are read every 2 seconds (`hubRefreshInterval`) instead of with the 30 second refresh
+- Motion sensors (T100) also read their event log, so a short movement between two reads is still reported; motion is held for `motionHoldTime` (default 30 seconds)
+- Door and motion changes are written to the log
+
 ## 0.1.0-beta.2 (2026-10-06)
 - H200 and H500 hubs (HTTPS login): their sensors (T310/T315, T100, T110, T300) and S210/S220 switches; cameras paired to the hub are skipped for now
 - Kasa devices: plugs, power strips (one outlet per socket), dimmers, bulbs and light strips, over the older Kasa protocol (port 9999) or KLAP; found by discovery too

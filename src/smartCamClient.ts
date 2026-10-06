@@ -216,14 +216,42 @@ export class SmartCamClient {
     return result;
   }
 
+  /** Run several smartcam methods in one round trip; each entry gets its result or its error. */
+  async requestMany(requests: { method: string; params: TapoParams }[]): Promise<{ method: string; result?: unknown; error_code?: number }[]> {
+    const response = await this.send({ method: 'multipleRequest', params: { requests } });
+    if (response.error_code) throw new TapoDeviceError(`multipleRequest: device error ${response.error_code}`, response.error_code);
+    return (response.result?.responses as { method: string; result?: unknown; error_code?: number }[] | undefined) ?? [];
+  }
+
   /** Run one smartcam method (as a single-entry multipleRequest) and return its result. */
   async request<T = TapoParams>(method: string, params: TapoParams): Promise<T> {
-    const response = await this.send({ method: 'multipleRequest', params: { requests: [{ method, params }] } });
-    if (response.error_code) throw new TapoDeviceError(`${method}: device error ${response.error_code}`, response.error_code);
-    const entry = (response.result?.responses as { method?: string; result?: unknown; error_code?: number }[] | undefined)?.[0];
+    const entry = (await this.requestMany([{ method, params }]))[0];
     if (!entry) throw new Error(`${method}: empty response`);
     if (entry.error_code) throw new TapoDeviceError(`${method}: device error ${entry.error_code}`, entry.error_code);
     return entry.result as T;
+  }
+
+  /**
+   * The hub's child list plus the trigger logs (latest events) of some children, in one round trip.
+   * A child whose logs could not be read is left out of the map.
+   */
+  async getChildrenAndLogs(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]> }> {
+    const responses = await this.requestMany([
+      { method: 'getChildDeviceList', params: { childControl: { start_index: 0 } } },
+      ...logChildIds.map((id) => ({ method: 'controlChild', params: { childControl: { device_id: id, request_data: { method: 'get_trigger_logs', params: { start_id: 0 } } } } })),
+    ]);
+    const [list, ...logResponses] = responses;
+    if (!list || list.error_code) throw new TapoDeviceError(`getChildDeviceList: device error ${list?.error_code}`, list?.error_code ?? -1);
+    const page = list.result as { child_device_list?: TapoParams[]; sum?: number } | undefined;
+    let children = page?.child_device_list ?? [];
+    // More children than one page: read the full list the normal way
+    if (children.length < (page?.sum ?? 0)) children = await this.getChildDeviceList();
+    const logs = new Map<string, TapoParams[]>();
+    logResponses.forEach((entry, index) => {
+      const data = (entry?.result as { response_data?: { error_code?: number; result?: { logs?: TapoParams[] } } } | undefined)?.response_data;
+      if (!entry?.error_code && !data?.error_code && Array.isArray(data?.result?.logs)) logs.set(logChildIds[index], data.result.logs);
+    });
+    return { children, logs };
   }
 
   /** basic_info of the hub or camera: device_alias, device_model, dev_id, sw_version, device_type... */

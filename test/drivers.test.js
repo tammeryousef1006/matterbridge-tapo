@@ -175,3 +175,24 @@ test('H500/H200 hub: wrong password is an auth error', async () => {
     await hub.stop();
   }
 });
+
+test('H500/H200 hub: quick read of children with motion sensor logs in one request', async () => {
+  const children = hubChildren();
+  children[2].logs = [
+    { id: 41, event: 'motion', eventId: 'b', timestamp: 1700000041 },
+    { id: 40, event: 'motion', eventId: 'a', timestamp: 1700000040 },
+  ];
+  const hub = createFakeSmartCamHub({ password: PASSWORD, children, basicInfo: { dev_id: 'HUBID', device_model: 'H500', device_type: 'SMART.TAPOHUB' } });
+  const port = await hub.start();
+  try {
+    const driver = new SmartCamHubDriver(new SmartCamClient({ host: '127.0.0.1', port, credentials: { username: EMAIL, password: PASSWORD } }));
+    const before = hub.state.requests.length;
+    const { children: list, logs } = await driver.readHubChildren(['T100-0']);
+    // 13 children need two pages: one batched request, then the paged list
+    assert.equal(list.length, 13);
+    assert.deepEqual(logs.get('T100-0').map((entry) => entry.id), [41, 40]);
+    assert.equal(hub.state.requests[before].params.requests.length, 2);
+  } finally {
+    await hub.stop();
+  }
+});
