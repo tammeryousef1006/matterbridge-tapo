@@ -1,6 +1,6 @@
 # Matterbridge Tapo Plugin
 
-[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/6sjde6vkzl)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/6sjde6vkzl) [![Discord](https://img.shields.io/badge/Discord-Matterbridge-5865F2?logo=discord&logoColor=white)](https://discord.gg/F2GupTjQdu)
 
 A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your TP-Link **Tapo** and **Kasa** plugs, power strips, bulbs, light strips and the sensors behind Tapo hubs to Matter, so you can use them in SmartThings, Apple Home, Google Home, Alexa, Home Assistant and any other Matter controller.
 
@@ -225,6 +225,12 @@ bun test ./test/                     # Bun (after npm run build)
 The tests run against fake devices that speak each protocol (KLAP, securePassthrough, HTTPS hub and Kasa XOR).
 
 ## Support
+
+### Need help?
+
+Join the **[Matterbridge Discord](https://discord.gg/F2GupTjQdu)** to get help with setting up Matterbridge and this plugin, and to talk with other Matterbridge users. If you think you found a bug, please open an [issue](https://github.com/tammeryousef1006/matterbridge-tapo/issues) with the Matterbridge log.
+
+### Support the development
 
 If this plugin is useful to you, you can support its development:
 
