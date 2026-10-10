@@ -138,7 +138,14 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
 
     this.tapoConfig = config as TapoPlatformConfig;
     this.log.debug('Received configuration:', JSON.stringify(redact(config), null, 2));
-    this.log.info('Tapo platform initialized.');
+    this.log.info(`Tapo platform ${this.version} initialized.`);
+    this.log.info(this.sirenEnabled ? 'Hub sirens: shown as switches.' : 'Hub sirens: not shown (turn on "Hub siren as a switch" in the settings to show them).');
+  }
+
+  /** The siren setting; a text "true" counts too, in case the config was edited by hand. */
+  private get sirenEnabled(): boolean {
+    const value = this.tapoConfig.sirenSwitch as unknown;
+    return value === true || value === 'true';
   }
 
   private get credentials(): { username: string; password: string } | undefined {
@@ -246,7 +253,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
   private async connectHost(ip: string, discovered: DiscoveredDevice | undefined): Promise<void> {
     // Read everything before registering anything, so a failure here can simply be retried later
     const { driver, info, children } = await this.readDevice(ip, discovered);
-    if (this.tapoConfig.sirenSwitch === true && isHub(info) && driver.readSiren && typeof info._siren !== 'boolean') {
+    if (this.sirenEnabled && isHub(info) && driver.readSiren && typeof info._siren !== 'boolean') {
       try {
         info._siren = await driver.readSiren();
       } catch (error) {
@@ -284,7 +291,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
     const { id, name, model, info } = unitInfo;
     const functions = deviceFunctions(info);
     // The hub's siren, as its own switch ("Hub Siren"), only when enabled in the settings
-    if (!unitInfo.parentId && this.tapoConfig.sirenSwitch === true && typeof info._siren === 'boolean') functions.push({ kind: 'siren', id: 'siren', label: 'Siren' });
+    if (!unitInfo.parentId && this.sirenEnabled && typeof info._siren === 'boolean') functions.push({ kind: 'siren', id: 'siren', label: 'Siren' });
     if (functions.length === 0) {
       if (!unitInfo.parentId && hasChildren(info)) return;
       this.log.info(`Skipping ${name} (${model || info.category}): not supported yet.`);

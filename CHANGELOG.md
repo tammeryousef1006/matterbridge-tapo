@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.1.0-beta.2 (2026-10-10)
+- The log shows the plugin version and whether hub sirens are shown at startup
+
 ## 1.1.0-beta.1 (2026-10-10)
 - Hub siren as a switch (`sirenSwitch`, off by default): H100, H200 and H500 hubs get a separate "<hub> Siren" switch that starts and stops the siren and turns off by itself when the siren stops
 - Optional siren sound, volume (1-10) and duration (`sirenSound`, `sirenVolume`, `sirenDuration`); empty keeps the hub's own settings
