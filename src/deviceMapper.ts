@@ -4,7 +4,7 @@ import { TapoParams } from './tapoClient.js';
  * What one Tapo device (or hub/strip child) offers to Matter. Each function becomes its own bridged
  * Matter device, because SmartThings does not show functions nested inside one composed device.
  */
-export type FunctionKind = 'onOff' | 'temperature' | 'humidity' | 'contact' | 'motion' | 'waterLeak';
+export type FunctionKind = 'onOff' | 'temperature' | 'humidity' | 'contact' | 'motion' | 'waterLeak' | 'siren';
 
 export interface DeviceFunction {
   kind: FunctionKind;
@@ -39,6 +39,8 @@ export interface DeviceState {
   open?: boolean;
   motion?: boolean;
   leak?: boolean;
+  /** Hubs: the siren is sounding. */
+  siren?: boolean;
   /** Percent, for battery powered hub sensors. */
   battery?: number;
 }
@@ -152,6 +154,8 @@ export function deviceState(info: TapoParams): DeviceState {
   if (typeof info.open === 'boolean') state.open = info.open;
   if (typeof info.detected === 'boolean') state.motion = info.detected;
   if (typeof info.water_leak_status === 'string') state.leak = info.water_leak_status !== 'water_dry' || info.in_alarm === true;
+
+  if (typeof info._siren === 'boolean') state.siren = info._siren;
 
   const battery = number(info.battery_percentage);
   if (battery !== undefined) state.battery = Math.max(0, Math.min(100, Math.round(battery)));

@@ -235,11 +235,16 @@ export class SmartCamClient {
    * The hub's child list plus the trigger logs (latest events) of some children, in one round trip.
    * A child whose logs could not be read is left out of the map.
    */
-  async getChildrenAndLogs(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]> }> {
+  async getChildrenAndLogs(
+    logChildIds: string[],
+    includeSiren = false,
+  ): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]>; siren?: boolean }> {
     const responses = await this.requestMany([
       { method: 'getChildDeviceList', params: { childControl: { start_index: 0 } } },
       ...logChildIds.map((id) => ({ method: 'controlChild', params: { childControl: { device_id: id, request_data: { method: 'get_trigger_logs', params: { start_id: 0 } } } } })),
+      ...(includeSiren ? [{ method: 'getSirenStatus', params: { siren: {} } }] : []),
     ]);
+    const sirenResponse = includeSiren ? responses.pop() : undefined;
     const [list, ...logResponses] = responses;
     if (!list || list.error_code) throw new TapoDeviceError(`getChildDeviceList: device error ${list?.error_code}`, list?.error_code ?? -1);
     const page = list.result as { child_device_list?: TapoParams[]; sum?: number } | undefined;
@@ -251,7 +256,24 @@ export class SmartCamClient {
       const data = (entry?.result as { response_data?: { error_code?: number; result?: { logs?: TapoParams[] } } } | undefined)?.response_data;
       if (!entry?.error_code && !data?.error_code && Array.isArray(data?.result?.logs)) logs.set(logChildIds[index], data.result.logs);
     });
-    return { children, logs };
+    return { children, logs, siren: sirenResponse && !sirenResponse.error_code ? sirenActive(sirenResponse.result) : undefined };
+  }
+
+  /** Whether the hub's siren is sounding. Throws when the hub has no siren. */
+  async getSirenStatus(): Promise<boolean> {
+    return sirenActive(await this.request('getSirenStatus', { siren: {} }));
+  }
+
+  /** Start or stop the siren; sound, volume (1-10) and duration (seconds) change the hub's siren settings first. */
+  async setSiren(on: boolean, config: { sound?: string; volume?: number; duration?: number } = {}): Promise<void> {
+    if (on) {
+      const settings: TapoParams = {};
+      if (config.sound) settings.siren_type = config.sound;
+      if (config.volume !== undefined) settings.volume = String(config.volume);
+      if (config.duration !== undefined) settings.duration = config.duration;
+      if (Object.keys(settings).length > 0) await this.request('setSirenConfig', { siren: settings });
+    }
+    await this.request('setSirenStatus', { siren: { status: on ? 'on' : 'off' } });
   }
 
   /** basic_info of the hub or camera: device_alias, device_model, dev_id, sw_version, device_type... */
@@ -280,4 +302,12 @@ export class SmartCamClient {
     if (response?.error_code) throw new TapoDeviceError(`${method} on child: device error ${response.error_code}`, response.error_code);
     return response?.result as T;
   }
+}
+
+/** getSirenStatus answers {status: "on"|"off", time_left}, possibly inside a "siren" section. */
+function sirenActive(result: unknown): boolean {
+  const data = (result ?? {}) as { status?: unknown; siren?: { status?: unknown } };
+  const status = data.status ?? data.siren?.status;
+  if (typeof status !== 'string') throw new Error('no siren status');
+  return status !== 'off';
 }

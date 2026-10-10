@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0-beta.1 (2026-10-10)
+- Hub siren as a switch (`sirenSwitch`, off by default): H100, H200 and H500 hubs get a separate "<hub> Siren" switch that starts and stops the siren and turns off by itself when the siren stops
+- Optional siren sound, volume (1-10) and duration (`sirenSound`, `sirenVolume`, `sirenDuration`); empty keeps the hub's own settings
+
 ## 1.0.0 (2026-10-06)
 - First release, tested with an H500 hub (T110, T100), a Kasa KP303 strip, L930/L920 light strips, L535 bulbs and P110/P110M plugs on SmartThings
 - Local control of Tapo and Kasa devices with the TP-Link account, over KLAP, securePassthrough, HTTPS (H200/H500) or the Kasa XOR protocol; works on Node.js and Bun

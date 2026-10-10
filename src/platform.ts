@@ -41,6 +41,7 @@ import {
   hasChildren,
   hueToMatter,
   isBulb,
+  isHub,
   kelvinToMireds,
   levelToBrightness,
   matterToHue,
@@ -51,7 +52,7 @@ import {
   xyToHueSaturation,
 } from './deviceMapper.js';
 import { DiscoveredDevice, discover } from './discovery.js';
-import { DeviceDriver, KasaDriver, LightParams, SmartCamHubDriver, SmartDriver } from './drivers.js';
+import { DeviceDriver, KasaDriver, LightParams, SirenConfig, SmartCamHubDriver, SmartDriver } from './drivers.js';
 import { KasaClient } from './kasaClient.js';
 import { SmartCamClient } from './smartCamClient.js';
 import { TapoAuthError, TapoClient, TapoParams, errorMessage } from './tapoClient.js';
@@ -64,6 +65,10 @@ export interface TapoPlatformConfig extends PlatformConfig {
   refreshInterval?: number;
   hubRefreshInterval?: number;
   motionHoldTime?: number;
+  sirenSwitch?: boolean;
+  sirenSound?: string;
+  sirenVolume?: number;
+  sirenDuration?: number;
   lightList?: string[];
   whiteList?: string[];
   blackList?: string[];
@@ -241,6 +246,13 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
   private async connectHost(ip: string, discovered: DiscoveredDevice | undefined): Promise<void> {
     // Read everything before registering anything, so a failure here can simply be retried later
     const { driver, info, children } = await this.readDevice(ip, discovered);
+    if (this.tapoConfig.sirenSwitch === true && isHub(info) && driver.readSiren && typeof info._siren !== 'boolean') {
+      try {
+        info._siren = await driver.readSiren();
+      } catch (error) {
+        this.log.info(`${unitName(info) || ip} has no siren that can be controlled: ${errorMessage(error)}`);
+      }
+    }
     const deviceId = String(info.device_id ?? discovered?.deviceId ?? ip);
     const model = baseModel(info.model ?? discovered?.model);
     const name = unitName(info) || `${model} ${ip}`;
@@ -271,6 +283,8 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
   private async addUnit(host: TapoHost, unitInfo: Omit<TapoUnit, 'functions' | 'endpoints'>): Promise<void> {
     const { id, name, model, info } = unitInfo;
     const functions = deviceFunctions(info);
+    // The hub's siren, as its own switch ("Hub Siren"), only when enabled in the settings
+    if (!unitInfo.parentId && this.tapoConfig.sirenSwitch === true && typeof info._siren === 'boolean') functions.push({ kind: 'siren', id: 'siren', label: 'Siren' });
     if (functions.length === 0) {
       if (!unitInfo.parentId && hasChildren(info)) return;
       this.log.info(`Skipping ${name} (${model || info.category}): not supported yet.`);
@@ -289,6 +303,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
       const label = fn.label ? `${name} ${fn.label}` : name;
       const endpoint = this.createEndpoint(unit, fn, endpointId, label, state);
       if (fn.kind === 'onOff') this.addOnOffHandlers(host, unit, endpoint, fn);
+      if (fn.kind === 'siren') this.addSirenHandlers(host, unit, endpoint);
       endpoint.addRequiredClusterServers();
       await this.registerDevice(endpoint);
       unit.endpoints.set(fn.id, endpoint);
@@ -298,6 +313,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
   }
 
   private functionLabel(unit: TapoUnit, fn: DeviceFunction): string {
+    if (fn.kind === 'siren') return 'siren switch';
     if (fn.kind !== 'onOff') return fn.kind;
     const type = this.deviceType(unit, fn);
     if (type === extendedColorLight) return 'color light';
@@ -324,6 +340,9 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
         return occupancySensor;
       case 'waterLeak':
         return waterLeakDetector;
+      case 'siren':
+        // Matter has no siren device type; an outlet stays out of "all lights" commands
+        return onOffPlugInUnit;
     }
   }
 
@@ -380,6 +399,9 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
         break;
       case 'waterLeak':
         endpoint.createDefaultBooleanStateClusterServer(state.leak ?? false);
+        break;
+      case 'siren':
+        endpoint.createDefaultOnOffClusterServer(state.siren ?? false);
         break;
     }
     return endpoint;
@@ -454,6 +476,35 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
     }
   }
 
+  private sirenConfig(): SirenConfig {
+    const { sirenSound, sirenVolume, sirenDuration } = this.tapoConfig;
+    const config: SirenConfig = {};
+    if (typeof sirenSound === 'string' && sirenSound.trim()) config.sound = sirenSound.trim();
+    if (Number.isFinite(Number(sirenVolume)) && sirenVolume !== undefined && sirenVolume !== null) config.volume = Math.max(1, Math.min(10, Math.round(Number(sirenVolume))));
+    if (Number.isFinite(Number(sirenDuration)) && sirenDuration !== undefined && sirenDuration !== null && Number(sirenDuration) > 0) {
+      config.duration = Math.round(Number(sirenDuration));
+    }
+    return config;
+  }
+
+  private addSirenHandlers(host: TapoHost, unit: TapoUnit, endpoint: MatterbridgeEndpoint): void {
+    const label = `${unit.name} Siren`;
+    const switchSiren = async (on: boolean): Promise<void> => {
+      this.log.info(`${label}: ${on ? 'starting the siren' : 'stopping the siren'}...`);
+      try {
+        await host.driver.setSiren!(on, this.sirenConfig());
+        unit.info = { ...unit.info, _siren: on };
+        this.log.info(`${label}: siren ${on ? 'on' : 'off'}.`);
+      } catch (error) {
+        this.log.error(`${label}: ${on ? 'starting' : 'stopping'} the siren failed: ${errorMessage(error)}`);
+        throw error;
+      }
+    };
+    endpoint.addCommandHandler('on', () => switchSiren(true));
+    endpoint.addCommandHandler('off', () => switchSiren(false));
+    endpoint.addCommandHandler('toggle', () => switchSiren(endpoint.getAttribute(OnOff.Cluster.id, 'onOff') !== true));
+  }
+
   override async onConfigure(): Promise<void> {
     await super.onConfigure();
     this.log.info('onConfigure called');
@@ -511,7 +562,12 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
           host.busy = true;
           try {
             const motionIds = [...host.units.values()].filter((unit) => unit.parentId && unit.functions.some((fn) => fn.kind === 'motion')).map((unit) => unit.id);
-            const { children, logs } = await host.driver.readHubChildren!(motionIds);
+            const { children, logs, siren } = await host.driver.readHubChildren!(motionIds);
+            const hubUnit = host.units.get(host.deviceId);
+            if (hubUnit && siren !== undefined) {
+              hubUnit.info = { ...hubUnit.info, _siren: siren };
+              await this.applyState(hubUnit, true);
+            }
             for (const child of children) {
               const unit = host.units.get(String(child.device_id));
               if (unit) unit.info = child;
@@ -563,7 +619,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
       if (!host.online) this.log.info(`${host.name} (${host.ip}) is back online.`);
       host.online = true;
       const own = host.units.get(host.deviceId);
-      if (own) own.info = info;
+      if (own) own.info = typeof info._siren === 'boolean' || typeof own.info._siren !== 'boolean' ? info : { ...info, _siren: own.info._siren };
       for (const child of children) {
         const unit = host.units.get(String(child.device_id));
         if (unit) unit.info = child;
@@ -617,6 +673,12 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
           }
           case 'waterLeak':
             if (state.leak !== undefined) await update(endpoint, BooleanState.Cluster.id, 'stateValue', state.leak);
+            break;
+          case 'siren':
+            if (state.siren !== undefined && endpoint.getAttribute(OnOff.Cluster.id, 'onOff') !== state.siren) {
+              this.log.info(`${unit.name} Siren: ${state.siren ? 'sounding' : 'stopped'}`);
+              await update(endpoint, OnOff.Cluster.id, 'onOff', state.siren);
+            }
             break;
         }
         if (state.battery !== undefined && hasBattery(unit.info)) {

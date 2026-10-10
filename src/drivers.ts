@@ -19,9 +19,22 @@ export interface DeviceDriver {
    * Hubs only: a quick read of the children, plus the latest trigger log entries ({id, event,
    * timestamp}, newest first) of the given children, which catch motion between two reads.
    */
-  readHubChildren?(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]> }>;
+  readHubChildren?(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]>; siren?: boolean }>;
+  /** Hubs only: whether the siren is sounding; throws when the hub has no siren. */
+  readSiren?(): Promise<boolean>;
+  /** Hubs only: start or stop the siren. */
+  setSiren?(on: boolean, config: SirenConfig): Promise<void>;
   /** Drop the session so the next request logs in again. */
   reset(): void;
+}
+
+/** Optional siren settings from the plugin config; unset values keep the hub's own settings. */
+export interface SirenConfig {
+  sound?: string;
+  /** 1-10. */
+  volume?: number;
+  /** Seconds. */
+  duration?: number;
 }
 
 export interface LightParams {
@@ -49,7 +62,10 @@ export class SmartDriver implements DeviceDriver {
     // A Kasa device on KLAP accepts the login but does not understand Tapo requests
     if (!info || typeof info !== 'object' || (!info.device_id && !info.model)) throw new Error('not a Tapo device (no device info)');
     const children = hasChildren(info) ? await this.client.getChildDeviceList() : [];
-    return { info: named(info, decodeNickname(info.nickname)), children: children.map((child) => named(child, decodeNickname(child.nickname))) };
+    const own = named(info, decodeNickname(info.nickname));
+    // H100: in_alarm tells whether the siren is sounding
+    if (typeof info.in_alarm === 'boolean') own._siren = info.in_alarm;
+    return { info: own, children: children.map((child) => named(child, decodeNickname(child.nickname))) };
   }
 
   async readHubChildren(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]> }> {
@@ -64,6 +80,25 @@ export class SmartDriver implements DeviceDriver {
       }
     }
     return { children, logs };
+  }
+
+  async readSiren(): Promise<boolean> {
+    const info = await this.client.getDeviceInfo();
+    if (typeof info.in_alarm !== 'boolean') throw new Error('this device has no siren');
+    return info.in_alarm;
+  }
+
+  async setSiren(on: boolean, config: SirenConfig): Promise<void> {
+    if (!on) {
+      await this.client.request('stop_alarm');
+      return;
+    }
+    const params: TapoParams = {};
+    if (config.sound) params.alarm_type = config.sound;
+    if (config.duration !== undefined) params.alarm_duration = config.duration;
+    // The H100 takes named volumes
+    if (config.volume !== undefined) params.alarm_volume = config.volume <= 0 ? 'mute' : config.volume <= 3 ? 'low' : config.volume <= 7 ? 'normal' : 'high';
+    await this.client.request('play_alarm', params);
   }
 
   async set(childId: string | undefined, params: LightParams): Promise<void> {
@@ -96,6 +131,13 @@ export class SmartCamHubDriver implements DeviceDriver {
       String(basic.device_alias ?? basic.device_name ?? ''),
     );
     const children = await this.client.getChildDeviceList();
+    if (this.hasSiren) {
+      try {
+        info._siren = await this.client.getSirenStatus();
+      } catch {
+        // Keep the last known state
+      }
+    }
     return {
       info,
       // Sensors carry a base64 nickname like on the H100; cameras a plain alias
@@ -103,9 +145,22 @@ export class SmartCamHubDriver implements DeviceDriver {
     };
   }
 
-  async readHubChildren(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]> }> {
-    const { children, logs } = await this.client.getChildrenAndLogs(logChildIds);
-    return { children: children.map((child) => named(child, decodeNickname(child.nickname) || String(child.alias ?? ''))), logs };
+  /** Set once the hub answered a siren status read; the quick reads then include it. */
+  private hasSiren = false;
+
+  async readHubChildren(logChildIds: string[]): Promise<{ children: TapoParams[]; logs: Map<string, TapoParams[]>; siren?: boolean }> {
+    const { children, logs, siren } = await this.client.getChildrenAndLogs(logChildIds, this.hasSiren);
+    return { children: children.map((child) => named(child, decodeNickname(child.nickname) || String(child.alias ?? ''))), logs, siren };
+  }
+
+  async readSiren(): Promise<boolean> {
+    const active = await this.client.getSirenStatus();
+    this.hasSiren = true;
+    return active;
+  }
+
+  async setSiren(on: boolean, config: SirenConfig): Promise<void> {
+    await this.client.setSiren(on, config);
   }
 
   async set(childId: string | undefined, params: LightParams): Promise<void> {

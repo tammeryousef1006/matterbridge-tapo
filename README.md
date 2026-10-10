@@ -29,7 +29,7 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 | Kasa power strips | HS300, KP303, KP400, EP40, HS107 | One outlet per socket |
 | Kasa dimmers | HS220, KS220 | Dimmable light |
 | Kasa bulbs and light strips | KL110, KL125, KL130, KL400, KL420, KL430 | Dimmable, white-tunable or colour light |
-| Tapo hubs | H100, H200, H500 | Not shown themselves; their sensors and switches are |
+| Tapo hubs | H100, H200, H500 | Not shown themselves; their sensors and switches are. Optionally the hub's siren as a switch (`sirenSwitch`) |
 | Temperature/humidity sensors | T310, T315 | Temperature sensor + separate humidity sensor, with battery |
 | Motion sensor | T100 | Occupancy sensor, with battery |
 | Door/window sensor | T110 | Contact sensor, with battery |
@@ -73,6 +73,8 @@ If some devices are not found (discovery uses a network broadcast, which some ne
 | `refreshInterval` | Seconds between state refreshes (default `30`, minimum `10`, `0` disables) |
 | `hubRefreshInterval` | Seconds between reads of the sensors behind a hub (default `2`, minimum `1`, `0` disables) |
 | `motionHoldTime` | Seconds a motion sensor stays "motion detected" after the last movement (default `30`) |
+| `sirenSwitch` | Show each hub's siren as a separate switch, e.g. "Tapo_H500 Siren" (default `false`). Matter has no siren device type, so it is a switch: on starts the siren, off stops it, and it turns off by itself when the siren stops. A "turn everything on" command would start it too, which is why it is off by default |
+| `sirenSound` / `sirenVolume` / `sirenDuration` | Optional siren sound (as named in the Tapo app, e.g. `Alarm 1`), volume (1-10) and duration in seconds; empty keeps the hub's settings |
 | `lightList` | Plugs/switches (names or device IDs) to expose as lights instead of outlets |
 | `whiteList` | Only expose devices with these names or device IDs |
 | `blackList` | Never expose devices with these names or device IDs |

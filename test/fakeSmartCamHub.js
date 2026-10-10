@@ -7,8 +7,8 @@ import https from 'node:https';
 const sha256U = (s) => crypto.createHash('sha256').update(s).digest('hex').toUpperCase();
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest();
 
-export function createFakeSmartCamHub({ password, children, basicInfo }) {
-  const state = { logins: [], requests: [], expireNext: false, sessions: new Map() };
+export function createFakeSmartCamHub({ password, children, basicInfo, siren = false }) {
+  const state = { logins: [], requests: [], expireNext: false, sessions: new Map(), siren: siren ? { on: false, config: {}, commands: [] } : undefined };
   const pwdHash = sha256U(password);
   let pending;
 
@@ -54,7 +54,11 @@ export function createFakeSmartCamHub({ password, children, basicInfo }) {
         const decipher = crypto.createDecipheriv('aes-128-cbc', session.key, session.iv);
         const request = JSON.parse(Buffer.concat([decipher.update(Buffer.from(body.params.request, 'base64')), decipher.final()]).toString());
         state.requests.push(request);
-        const responses = request.params.requests.map(({ method, params }) => ({ method, error_code: 0, result: handle(method, params) }));
+        const responses = request.params.requests.map(({ method, params }) => {
+          const result = handle(method, params);
+          // A hub without a siren answers an error for the siren methods
+          return result === undefined ? { method, error_code: -40106 } : { method, error_code: 0, result };
+        });
         const cipher = crypto.createCipheriv('aes-128-cbc', session.key, session.iv);
         const response = JSON.stringify({ error_code: 0, result: { responses } });
         json(200, { seq: session.seq, result: { response: Buffer.concat([cipher.update(response), cipher.final()]).toString('base64') } });
@@ -80,6 +84,16 @@ export function createFakeSmartCamHub({ password, children, basicInfo }) {
         Object.assign(child, request_data.params);
         return { response_data: { error_code: 0, result: {} } };
       }
+      case 'getSirenStatus':
+        if (!state.siren) return undefined;
+        return { status: state.siren.on ? 'on' : 'off', time_left: state.siren.on ? 30 : 0 };
+      case 'setSirenConfig':
+        Object.assign(state.siren.config, params.siren);
+        return {};
+      case 'setSirenStatus':
+        state.siren.on = params.siren.status === 'on';
+        state.siren.commands.push(params.siren.status);
+        return {};
       default:
         return {};
     }

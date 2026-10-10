@@ -60,6 +60,27 @@
       "type": "number",
       "default": 30
     },
+    "sirenSwitch": {
+      "title": "Hub siren as a switch",
+      "description": "Show the siren of Tapo hubs (H100, H200, H500) as a separate switch, e.g. 'Hub Siren'. Off by default: a 'turn everything on' command would start the siren.",
+      "type": "boolean",
+      "default": false
+    },
+    "sirenSound": {
+      "title": "Siren sound",
+      "description": "Optional: the siren sound as named in the Tapo app, e.g. 'Alarm 1'. Empty keeps the hub's setting.",
+      "type": "string"
+    },
+    "sirenVolume": {
+      "title": "Siren volume",
+      "description": "Optional: 1 (quiet) to 10 (loud). Empty keeps the hub's setting.",
+      "type": "number"
+    },
+    "sirenDuration": {
+      "title": "Siren duration",
+      "description": "Optional: how many seconds the siren sounds before stopping by itself. Empty keeps the hub's setting.",
+      "type": "number"
+    },
     "lightList": {
       "description": "Expose these plugs/switches (names or device IDs) as lights instead of outlets",
       "type": "array",

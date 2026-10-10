@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { KasaDriver, SmartCamHubDriver, kasaInfo } from '../dist/drivers.js';
+import { KasaDriver, SmartCamHubDriver, SmartDriver, kasaInfo } from '../dist/drivers.js';
 import { KasaClient, xorDecrypt, xorEncrypt } from '../dist/kasaClient.js';
 import { SmartCamClient } from '../dist/smartCamClient.js';
-import { TapoAuthError } from '../dist/tapoClient.js';
+import { TapoAuthError, TapoClient } from '../dist/tapoClient.js';
 import { createFakeDevice } from './fakeDevice.js';
 import { createFakeKasaDevice } from './fakeKasaDevice.js';
 import { createFakeSmartCamHub } from './fakeSmartCamHub.js';
@@ -194,5 +194,68 @@ test('H500/H200 hub: quick read of children with motion sensor logs in one reque
     assert.equal(hub.state.requests[before].params.requests.length, 2);
   } finally {
     await hub.stop();
+  }
+});
+
+test('H500/H200 hub siren: status, start with settings, stop, and in the quick read', async () => {
+  const hub = createFakeSmartCamHub({ password: PASSWORD, children: hubChildren(), basicInfo: { dev_id: 'HUBID', device_model: 'H500', device_type: 'SMART.TAPOHUB' }, siren: true });
+  const port = await hub.start();
+  try {
+    const driver = new SmartCamHubDriver(new SmartCamClient({ host: '127.0.0.1', port, credentials: { username: EMAIL, password: PASSWORD } }));
+    assert.equal(await driver.readSiren(), false);
+    await driver.setSiren(true, { sound: 'Alarm 1', volume: 7, duration: 20 });
+    assert.deepEqual(hub.state.siren.config, { siren_type: 'Alarm 1', volume: '7', duration: 20 });
+    assert.equal((await driver.readHubChildren([])).siren, true);
+    assert.equal((await driver.read()).info._siren, true);
+    await driver.setSiren(false, {});
+    assert.deepEqual(hub.state.siren.commands, ['on', 'off']);
+    assert.equal((await driver.readHubChildren([])).siren, false);
+  } finally {
+    await hub.stop();
+  }
+});
+
+test('hub without a siren: the siren read fails and quick reads leave it out', async () => {
+  const hub = createFakeSmartCamHub({ password: PASSWORD, children: hubChildren(), basicInfo: { dev_id: 'HUBID', device_model: 'H200', device_type: 'SMART.TAPOHUB' } });
+  const port = await hub.start();
+  try {
+    const driver = new SmartCamHubDriver(new SmartCamClient({ host: '127.0.0.1', port, credentials: { username: EMAIL, password: PASSWORD } }));
+    await assert.rejects(driver.readSiren());
+    assert.equal((await driver.readHubChildren([])).siren, undefined);
+  } finally {
+    await hub.stop();
+  }
+});
+
+test('H100 siren: in_alarm, play_alarm with named volume, stop_alarm', async () => {
+  const hub = { in_alarm: false, calls: [] };
+  const device = createFakeDevice({
+    protocol: 'aes',
+    username: EMAIL,
+    password: PASSWORD,
+    handle: (request) => {
+      if (request.method === 'get_device_info') return { error_code: 0, result: { device_id: 'H100ID', model: 'H100', type: 'SMART.TAPOHUB', in_alarm: hub.in_alarm } };
+      if (request.method === 'get_child_device_list') return { error_code: 0, result: { child_device_list: [], start_index: 0, sum: 0 } };
+      if (request.method === 'play_alarm' || request.method === 'stop_alarm') {
+        hub.in_alarm = request.method === 'play_alarm';
+        hub.calls.push([request.method, request.params ?? null]);
+        return { error_code: 0 };
+      }
+      return { error_code: -1002 };
+    },
+  });
+  const port = await device.start();
+  try {
+    const driver = new SmartDriver(new TapoClient({ host: '127.0.0.1', port, credentials: { username: EMAIL, password: PASSWORD } }));
+    assert.equal((await driver.read()).info._siren, false);
+    await driver.setSiren(true, { volume: 9, duration: 15 });
+    assert.equal(await driver.readSiren(), true);
+    await driver.setSiren(false, {});
+    assert.deepEqual(hub.calls, [
+      ['play_alarm', { alarm_duration: 15, alarm_volume: 'high' }],
+      ['stop_alarm', null],
+    ]);
+  } finally {
+    await device.stop();
   }
 });
