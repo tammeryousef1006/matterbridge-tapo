@@ -13,6 +13,7 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 - Sensors and switches behind a Tapo hub (H100, H200, H500) appear as their own devices.
 - Each function is a separate device (e.g. "Bedroom Sensor" for the temperature and "Bedroom Sensor Humidity"; each power strip socket), so it shows up in SmartThings too.
 - Colour and white temperature for colour bulbs and light strips.
+- Optionally, each hub's siren as a switch you can use in alarm routines (see [Hub siren](#hub-siren)).
 - Changes made in the Tapo/Kasa apps, by hand or by automations are picked up by polling.
 - Devices that stop answering show as "not responding" in your controller.
 - Works with Matterbridge running on Node.js or on Bun.
@@ -29,7 +30,7 @@ A [Matterbridge](https://github.com/Luligu/matterbridge) plugin that brings your
 | Kasa power strips | HS300, KP303, KP400, EP40, HS107 | One outlet per socket |
 | Kasa dimmers | HS220, KS220 | Dimmable light |
 | Kasa bulbs and light strips | KL110, KL125, KL130, KL400, KL420, KL430 | Dimmable, white-tunable or colour light |
-| Tapo hubs | H100, H200, H500 | Not shown themselves; their sensors and switches are. Optionally the hub's siren as a switch (`sirenSwitch`) |
+| Tapo hubs | H100, H110, H200, H500 | Not shown themselves; their sensors and switches are. Optionally the hub's siren as a switch ([Hub siren](#hub-siren)) |
 | Temperature/humidity sensors | T310, T315 | Temperature sensor + separate humidity sensor, with battery |
 | Motion sensor | T100 | Occupancy sensor, with battery |
 | Door/window sensor | T110 | Contact sensor, with battery |
@@ -177,6 +178,22 @@ Your password is only sent to your own devices, never to the internet: Tapo devi
 
 If some devices are not found (discovery uses a network broadcast, which some networks or Docker setups block), give them a fixed IP address in your router and add those addresses under **Device IP addresses** (`hosts`).
 
+## Hub siren
+
+Tapo hubs (H100, H110, H200, H500) have a built-in siren. Matter has no siren device type yet, so the plugin can show it as a **switch** instead, for example **"Tapo_H500 Siren"**:
+
+- **On** starts the siren, **off** stops it.
+- The switch turns off by itself when the siren stops (after its duration, or when you stop it in the Tapo app), within about 2 seconds.
+- Use it in your controller's routines, e.g. "when the front door opens while I'm away, turn on Tapo_H500 Siren".
+
+To turn it on:
+
+1. Open the plugin settings and tick **Hub siren as a switch** (`sirenSwitch`).
+2. Optionally set **Siren sound** (the name as shown in the Tapo app, e.g. `Alarm 1`), **Siren volume** (1 = quiet, 10 = loud) and **Siren duration** (seconds). Empty fields keep the hub's own settings. These settings are saved on the hub, so they also apply to alarms started from the Tapo app.
+3. Save and restart the plugin. The log shows `Registered Tapo_H500 (H500) as siren switch` for each hub with a siren.
+
+> **Careful:** because it is a switch, "turn everything on" voice commands or routines that switch on all devices would start the siren too. That is why it is off by default; keep the siren switch out of such routines. It is shown as an outlet, so "turn on all lights" does not include it.
+
 ## Configuration
 
 | Option | Description |
@@ -200,6 +217,7 @@ If some devices are not found (discovery uses a network broadcast, which some ne
 - **No devices found**: check that Matterbridge is on the same network as the devices (with Docker, use host networking), or add their IP addresses under `hosts`.
 - **A device shows "not responding"**: it didn't answer the last refresh. Check its Wi-Fi. It comes back by itself.
 - **Sensor values update slowly**: door and motion sensors are read through the hub every `hubRefreshInterval` seconds (2 by default). Temperature and humidity sensors only report to the hub every few minutes themselves.
+- **No siren switch appears**: check that the log says `Hub sirens: shown as switches.` at startup; if it says `not shown`, tick **Hub siren as a switch** and save. A hub whose siren can't be controlled logs `has no siren that can be controlled` with the reason.
 - **A device is skipped as unsupported**: enable `debug`, restart, and include the logged device info in an issue.
 
 ## How it works

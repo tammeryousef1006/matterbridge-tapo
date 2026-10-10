@@ -1,6 +1,6 @@
 {
   "name": "matterbridge-tapo",
-  "version": "1.1.0-beta.2",
+  "version": "1.1.0",
   "description": "TP-Link Tapo and Kasa for Matterbridge",
   "main": "dist/index.js",
   "type": "module",

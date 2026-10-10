@@ -17,6 +17,8 @@ import {
   temperatureSensor,
   waterLeakDetector,
 } from 'matterbridge';
+import * as fs from 'fs';
+
 import { AnsiLogger } from 'matterbridge/logger';
 import {
   BooleanState,
@@ -138,7 +140,7 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
 
     this.tapoConfig = config as TapoPlatformConfig;
     this.log.debug('Received configuration:', JSON.stringify(redact(config), null, 2));
-    this.log.info(`Tapo platform ${this.version} initialized.`);
+    this.log.info(`Tapo platform ${pluginVersion() ?? this.version} initialized.`);
     this.log.info(this.sirenEnabled ? 'Hub sirens: shown as switches.' : 'Hub sirens: not shown (turn on "Hub siren as a switch" in the settings to show them).');
   }
 
@@ -716,6 +718,15 @@ export class TapoPlatform extends MatterbridgeDynamicPlatform {
       await update(endpoint, ColorControl.Cluster.id, 'colorMode', mode);
       await update(endpoint, ColorControl.Cluster.id, 'enhancedColorMode', mode);
     }
+  }
+}
+
+/** The version of the installed package (Matterbridge may report the version it first installed). */
+function pluginVersion(): string | undefined {
+  try {
+    return (JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version?: string }).version;
+  } catch {
+    return undefined;
   }
 }
 
